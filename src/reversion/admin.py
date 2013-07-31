@@ -398,8 +398,7 @@ class VersionAdmin(admin.ModelAdmin):
         # Generate the context.
         context = {
             "title": _("Change %(name)s based on older version") % {"name": force_unicode(self.model._meta.verbose_name)},
-            "version_id": version_id,
-            # TODO don't cram this query into one line
+            "version_id": int(version_id),
             "current_version_id": Version.objects.get_for_object(obj).order_by("-pk")[0].pk,
             }
         context.update(extra_context or {})
