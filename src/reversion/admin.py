@@ -235,7 +235,6 @@ class VersionAdmin(admin.ModelAdmin):
             else:
                 form_validated = False
                 new_object = obj
-            prefixes = {}
             if all_valid(formsets) and form_validated:
                 self.save_model(request, new_object, form, change=True)
                 form.save_m2m()
