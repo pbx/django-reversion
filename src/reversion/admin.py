@@ -213,6 +213,37 @@ class VersionAdmin(admin.ModelAdmin):
                                  and unicode(related_version.field_dict[fk_name]) == unicode(object_id)])
         return related_versions
 
+    def _hack_inline_formset_initial(self, FormSet, formset, obj, version, revert, recover):
+        """Hacks the given formset to contain the correct initial data."""
+        # Now we hack it to push in the data from the revision!
+        initial = []
+        related_versions = self.get_related_versions(obj, version, FormSet)
+        formset.related_versions = related_versions
+        for related_obj in formset.queryset:
+            if unicode(related_obj.pk) in related_versions:
+                initial.append(related_versions.pop(unicode(related_obj.pk)).field_dict)
+            else:
+                initial_data = model_to_dict(related_obj)
+                initial_data["DELETE"] = True
+                initial.append(initial_data)
+        for related_version in related_versions.values():
+            initial_row = related_version.field_dict
+            pk_name = ContentType.objects.get_for_id(related_version.content_type_id).model_class()._meta.pk.name
+            del initial_row[pk_name]
+            initial.append(initial_row)
+        # Reconstruct the forms with the new revision data.
+        formset.initial = initial
+        formset.forms = [formset._construct_form(n) for n in xrange(len(initial))]
+        # Hack the formset to force a save of everything.
+        def get_changed_data(form):
+            return [field.name for field in form.fields]
+        for form in formset.forms:
+            form.has_changed = lambda: True
+            form._get_changed_data = partial(get_changed_data, form=form)
+        def total_form_count_hack(count):
+            return lambda: count
+        formset.total_form_count = total_form_count_hack(len(initial))
+
     def render_revision_form(self, request, obj, version, context, revert=False, recover=False):
         """Renders the object revision form."""
         model = self.model
@@ -235,6 +266,19 @@ class VersionAdmin(admin.ModelAdmin):
             else:
                 form_validated = False
                 new_object = obj
+            prefixes = {}
+            for FormSet, inline in zip(self.get_formsets(request, new_object),
+                                       self.get_inline_instances(request)):
+                prefix = FormSet.get_default_prefix()
+                prefixes[prefix] = prefixes.get(prefix, 0) + 1
+                if prefixes[prefix] != 1:
+                    prefix = "%s-%s" % (prefix, prefixes[prefix])
+                formset = FormSet(request.POST, request.FILES,
+                                  instance=new_object, prefix=prefix,
+                                  queryset=inline.queryset(request))
+                self._hack_inline_formset_initial(FormSet, formset, obj, version, revert, recover)
+                # Add this hacked formset to the form.
+                formsets.append(formset)
             if all_valid(formsets) and form_validated:
                 self.save_model(request, new_object, form, change=True)
                 form.save_m2m()
@@ -259,17 +303,40 @@ class VersionAdmin(admin.ModelAdmin):
                     assert False
         else:
             form = ModelForm(instance=obj, initial=self.get_revision_form_data(request, obj, version))
+            prefixes = {}
+            for FormSet, inline in zip(self.get_formsets(request, obj), self.get_inline_instances(request)):
+                # This code is standard for creating the formset.
+                prefix = FormSet.get_default_prefix()
+                prefixes[prefix] = prefixes.get(prefix, 0) + 1
+                if prefixes[prefix] != 1:
+                    prefix = "%s-%s" % (prefix, prefixes[prefix])
+                formset = FormSet(instance=obj, prefix=prefix,
+                                  queryset=inline.queryset(request))
+                self._hack_inline_formset_initial(FormSet, formset, obj, version, revert, recover)
+                # Add this hacked formset to the form.
+                formsets.append(formset)
         # Generate admin form helper.
         adminForm = helpers.AdminForm(form, self.get_fieldsets(request, obj),
             self.prepopulated_fields, self.get_readonly_fields(request, obj),
             model_admin=self)
         media = self.media + adminForm.media
+        # Generate formset helpers.
+        inline_admin_formsets = []
+        for inline, formset in zip(self.get_inline_instances(request), formsets):
+            fieldsets = list(inline.get_fieldsets(request, obj))
+            readonly = list(inline.get_readonly_fields(request, obj))
+            prepopulated = inline.get_prepopulated_fields(request, obj)
+            inline_admin_formset = helpers.InlineAdminFormSet(inline, formset,
+                fieldsets, prepopulated, readonly, model_admin=self)
+            inline_admin_formsets.append(inline_admin_formset)
+            media = media + inline_admin_formset.media
         # Generate the context.
         context.update({"adminform": adminForm,
                         "object_id": object_id,
                         "original": obj,
                         "is_popup": False,
                         "media": mark_safe(media),
+                        "inline_admin_formsets": inline_admin_formsets,
                         "errors": helpers.AdminErrorList(form, formsets),
                         "app_label": opts.app_label,
                         "add": False,
