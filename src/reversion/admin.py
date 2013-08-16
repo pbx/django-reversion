@@ -1,4 +1,6 @@
 """Admin extensions for django-reversion."""
+from functools import partial
+
 from django import template
 from django.db import models, transaction, connection
 from django.conf.urls.defaults import patterns, url
@@ -9,6 +11,7 @@ from django.contrib.contenttypes.generic import GenericInlineModelAdmin, Generic
 from django.contrib.contenttypes.models import ContentType
 from django.core.urlresolvers import reverse
 from django.forms.formsets import all_valid
+from django.forms.models import model_to_dict
 from django.http import HttpResponseRedirect
 from django.core.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404, render_to_response
@@ -302,6 +305,10 @@ class VersionAdmin(admin.ModelAdmin):
                 else:
                     assert False
         else:
+            # This is a mutated version of the code in the standard model admin
+            # change_view.  Once again, a hook for this kind of functionality
+            # would be nice.  Unfortunately, it results in doubling the number
+            # of queries required to construct the formets.
             form = ModelForm(instance=obj, initial=self.get_revision_form_data(request, obj, version))
             prefixes = {}
             for FormSet, inline in zip(self.get_formsets(request, obj), self.get_inline_instances(request)):
